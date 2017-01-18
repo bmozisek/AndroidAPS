@@ -22,6 +22,11 @@ public class DanaRPump {
     public static final int UNITS_MGDL = 0;
     public static final int UNITS_MMOL = 1;
 
+    public static final int DELIVERY_PRIME = 0x01;
+    public static final int DELIVERY_STEP_BOLUS = 0x02;
+    public static final int DELIVERY_BASAL = 0x04;
+    public static final int DELIVERY_EXT_BOLUS = 0x08;
+
     public static final String PROFILE_PREFIX = "DanaR-";
 
     public Date lastConnection = new Date(0);
@@ -35,11 +40,24 @@ public class DanaRPump {
     public int password = -1;
     public Date pumpTime = new Date(0);
 
+    public static final int DOMESTIC_MODEL = 0x01;
+    public static final int EXPORT_MODEL = 0x03;
+    public int model;
+    public int protocol;
+    public int productCode;
+
+    public boolean isConfigUD;
+    public boolean isExtendedBolusEnabled;
+
+
     // Status
     public boolean pumpSuspended;
     public boolean calculatorEnabled;
     public double dailyTotalUnits;
     public int maxDailyTotalUnits;
+
+    public double bolusStep;
+    public double basalStep;
 
     public double iob;
 
@@ -58,6 +76,7 @@ public class DanaRPump {
     public int tempBasalTotalSec;
     public Date tempBasalStart;
 
+    public boolean isDualBolusInProgress;
     public boolean isExtendedInProgress;
     public int extendedBolusMinutes;
     public double extendedBolusAmount;
@@ -113,21 +132,21 @@ public class DanaRPump {
             profile.put("dia", dia);
 
             JSONArray carbratios = new JSONArray();
-            carbratios.put(new JSONObject().put("time", "00:00").put("timeAsSeconds", 0).put("value", nightCF));
-            carbratios.put(new JSONObject().put("time", "06:00").put("timeAsSeconds", 6 * 3600).put("value", morningCF));
-            carbratios.put(new JSONObject().put("time", "11:00").put("timeAsSeconds", 11 * 3600).put("value", afternoonCF));
-            carbratios.put(new JSONObject().put("time", "14:00").put("timeAsSeconds", 17 * 3600).put("value", eveningCF));
-            carbratios.put(new JSONObject().put("time", "22:00").put("timeAsSeconds", 22 * 3600).put("value", nightCF));
+            carbratios.put(new JSONObject().put("time", "00:00").put("timeAsSeconds", 0).put("value", nightCIR));
+            carbratios.put(new JSONObject().put("time", "06:00").put("timeAsSeconds", 6 * 3600).put("value", morningCIR));
+            carbratios.put(new JSONObject().put("time", "11:00").put("timeAsSeconds", 11 * 3600).put("value", afternoonCIR));
+            carbratios.put(new JSONObject().put("time", "14:00").put("timeAsSeconds", 17 * 3600).put("value", eveningCIR));
+            carbratios.put(new JSONObject().put("time", "22:00").put("timeAsSeconds", 22 * 3600).put("value", nightCIR));
             profile.put("carbratio", carbratios);
 
             profile.put("carbs_hr", car);
 
             JSONArray sens = new JSONArray();
-            sens.put(new JSONObject().put("time", "00:00").put("timeAsSeconds", 0).put("value", nightCIR));
-            sens.put(new JSONObject().put("time", "06:00").put("timeAsSeconds", 6 * 3600).put("value", morningCIR));
-            sens.put(new JSONObject().put("time", "11:00").put("timeAsSeconds", 11 * 3600).put("value", afternoonCIR));
-            sens.put(new JSONObject().put("time", "17:00").put("timeAsSeconds", 17 * 3600).put("value", eveningCIR));
-            sens.put(new JSONObject().put("time", "22:00").put("timeAsSeconds", 22 * 3600).put("value", nightCIR));
+            sens.put(new JSONObject().put("time", "00:00").put("timeAsSeconds", 0).put("value", nightCF));
+            sens.put(new JSONObject().put("time", "06:00").put("timeAsSeconds", 6 * 3600).put("value", morningCF));
+            sens.put(new JSONObject().put("time", "11:00").put("timeAsSeconds", 11 * 3600).put("value", afternoonCF));
+            sens.put(new JSONObject().put("time", "17:00").put("timeAsSeconds", 17 * 3600).put("value", eveningCF));
+            sens.put(new JSONObject().put("time", "22:00").put("timeAsSeconds", 22 * 3600).put("value", nightCF));
             profile.put("sens", sens);
 
             JSONArray basals = new JSONArray();

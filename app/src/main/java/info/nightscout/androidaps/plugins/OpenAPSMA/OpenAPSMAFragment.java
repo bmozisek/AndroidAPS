@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import info.nightscout.androidaps.MainApp;
 import info.nightscout.androidaps.R;
 import info.nightscout.androidaps.interfaces.FragmentBase;
+import info.nightscout.androidaps.plugins.Loop.APSResult;
 import info.nightscout.androidaps.plugins.OpenAPSMA.events.EventOpenAPSMAUpdateGui;
 import info.nightscout.androidaps.plugins.OpenAPSMA.events.EventOpenAPSMAUpdateResultGui;
 import info.nightscout.utils.JSONFormatter;
@@ -24,9 +25,12 @@ import info.nightscout.utils.JSONFormatter;
 public class OpenAPSMAFragment extends Fragment implements View.OnClickListener, FragmentBase {
     private static Logger log = LoggerFactory.getLogger(OpenAPSMAFragment.class);
 
-    private static OpenAPSMAPlugin openAPSMAPlugin = new OpenAPSMAPlugin();
+    private static OpenAPSMAPlugin openAPSMAPlugin;
 
     public static OpenAPSMAPlugin getPlugin() {
+        if(openAPSMAPlugin==null){
+            openAPSMAPlugin = new OpenAPSMAPlugin();
+        }
         return openAPSMAPlugin;
     }
 
@@ -64,7 +68,7 @@ public class OpenAPSMAFragment extends Fragment implements View.OnClickListener,
     public void onClick(View view) {
         switch (view.getId()) {
             case R.id.openapsma_run:
-                openAPSMAPlugin.invoke();
+                getPlugin().invoke();
                 break;
         }
 
@@ -98,15 +102,21 @@ public class OpenAPSMAFragment extends Fragment implements View.OnClickListener,
             activity.runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    if (openAPSMAPlugin.lastAPSResult != null) {
-                        glucoseStatusView.setText(JSONFormatter.format(openAPSMAPlugin.lastDetermineBasalAdapterJS.getGlucoseStatusParam()));
-                        currentTempView.setText(JSONFormatter.format(openAPSMAPlugin.lastDetermineBasalAdapterJS.getCurrentTempParam()));
-                        iobDataView.setText(JSONFormatter.format(openAPSMAPlugin.lastDetermineBasalAdapterJS.getIobDataParam()));
-                        profileView.setText(JSONFormatter.format(openAPSMAPlugin.lastDetermineBasalAdapterJS.getProfileParam()));
-                        mealDataView.setText(JSONFormatter.format(openAPSMAPlugin.lastDetermineBasalAdapterJS.getMealDataParam()));
-                        resultView.setText(JSONFormatter.format(openAPSMAPlugin.lastAPSResult.json));
-                        requestView.setText(openAPSMAPlugin.lastAPSResult.toSpanned());
-                        lastRunView.setText(openAPSMAPlugin.lastAPSRun.toLocaleString());
+                    DetermineBasalResult lastAPSResult = getPlugin().lastAPSResult;
+                    if (lastAPSResult != null) {
+                        resultView.setText(JSONFormatter.format(lastAPSResult.json));
+                        requestView.setText(lastAPSResult.toSpanned());
+                    }
+                    DetermineBasalAdapterJS determineBasalAdapterJS = getPlugin().lastDetermineBasalAdapterJS;
+                    if (determineBasalAdapterJS != null) {
+                        glucoseStatusView.setText(JSONFormatter.format(determineBasalAdapterJS.getGlucoseStatusParam()));
+                        currentTempView.setText(JSONFormatter.format(determineBasalAdapterJS.getCurrentTempParam()));
+                        iobDataView.setText(JSONFormatter.format(determineBasalAdapterJS.getIobDataParam()));
+                        profileView.setText(JSONFormatter.format(determineBasalAdapterJS.getProfileParam()));
+                        mealDataView.setText(JSONFormatter.format(determineBasalAdapterJS.getMealDataParam()));
+                    }
+                    if (getPlugin().lastAPSRun != null) {
+                        lastRunView.setText(getPlugin().lastAPSRun.toLocaleString());
                     }
                 }
             });

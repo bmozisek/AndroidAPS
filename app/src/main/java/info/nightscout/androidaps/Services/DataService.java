@@ -22,9 +22,6 @@ import org.slf4j.LoggerFactory;
 import java.sql.SQLException;
 import java.util.Date;
 import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
 
 import info.nightscout.androidaps.Config;
 import info.nightscout.androidaps.Constants;
@@ -36,14 +33,16 @@ import info.nightscout.androidaps.db.Treatment;
 import info.nightscout.androidaps.events.EventNewBG;
 import info.nightscout.androidaps.events.EventNewBasalProfile;
 import info.nightscout.androidaps.events.EventTreatmentChange;
+import info.nightscout.androidaps.interfaces.PluginBase;
 import info.nightscout.androidaps.interfaces.PumpInterface;
 import info.nightscout.androidaps.plugins.ConfigBuilder.ConfigBuilderPlugin;
 import info.nightscout.androidaps.plugins.DanaR.History.DanaRNSHistorySync;
-import info.nightscout.androidaps.plugins.NSProfileViewer.NSProfileViewerPlugin;
+import info.nightscout.androidaps.plugins.NSProfile.NSProfilePlugin;
 import info.nightscout.androidaps.plugins.Objectives.ObjectivesPlugin;
 import info.nightscout.androidaps.plugins.Overview.OverviewPlugin;
 import info.nightscout.androidaps.plugins.SmsCommunicator.SmsCommunicatorPlugin;
 import info.nightscout.androidaps.plugins.SmsCommunicator.events.EventNewSMS;
+import info.nightscout.androidaps.plugins.SourceMM640g.SourceMM640gPlugin;
 import info.nightscout.androidaps.plugins.SourceNSClient.SourceNSClientPlugin;
 import info.nightscout.androidaps.plugins.SourceXdrip.SourceXdripPlugin;
 import info.nightscout.androidaps.receivers.DataReceiver;
@@ -57,6 +56,7 @@ public class DataService extends IntentService {
 
     boolean xDripEnabled = false;
     boolean nsClientEnabled = true;
+    boolean mm640gEnabled = false;
 
     public DataService() {
         super("DataService");
@@ -71,12 +71,18 @@ public class DataService extends IntentService {
         if (ConfigBuilderPlugin.getActiveBgSource().getClass().equals(SourceXdripPlugin.class)) {
             xDripEnabled = true;
             nsClientEnabled = false;
+            mm640gEnabled = false;
         } else if (ConfigBuilderPlugin.getActiveBgSource().getClass().equals(SourceNSClientPlugin.class)) {
             xDripEnabled = false;
             nsClientEnabled = true;
+            mm640gEnabled = false;
+        } else if (ConfigBuilderPlugin.getActiveBgSource().getClass().equals(SourceMM640gPlugin.class)) {
+            xDripEnabled = false;
+            nsClientEnabled = false;
+            mm640gEnabled = true;
         }
 
-        boolean isNSProfile = ConfigBuilderPlugin.getActiveProfile().getClass().equals(NSProfileViewerPlugin.class);
+        boolean isNSProfile = ConfigBuilderPlugin.getActiveProfile().getClass().equals(NSProfilePlugin.class);
 
         SharedPreferences SP = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
         boolean nsUploadOnly = SP.getBoolean("ns_upload_only", false);
@@ -87,6 +93,10 @@ public class DataService extends IntentService {
                 if (xDripEnabled) {
                     handleNewDataFromXDrip(intent);
                 }
+            } else if (Intents.NS_EMULATOR.equals(action)) {
+                if (mm640gEnabled) {
+                    handleNewDataFromMM640g(intent);
+                }
             } else if (Intents.ACTION_NEW_SGV.equals(action)) {
                 // always handle SGV if NS-Client is the source
                 if (nsClientEnabled) {
@@ -95,12 +105,11 @@ public class DataService extends IntentService {
                 // Objectives 0
                 ObjectivesPlugin.bgIsAvailableInNS = true;
                 ObjectivesPlugin.saveProgress();
-            } else if (isNSProfile && Intents.ACTION_NEW_PROFILE.equals(action)){
-                // always handle Profili if NSProfile is enabled without looking at nsUploadOnly
+            } else if (isNSProfile && Intents.ACTION_NEW_PROFILE.equals(action)) {
+                // always handle Profile if NSProfile is enabled without looking at nsUploadOnly
                 handleNewDataFromNSClient(intent);
             } else if (!nsUploadOnly &&
-                    (Intents.ACTION_NEW_PROFILE.equals(action) ||
-                            Intents.ACTION_NEW_TREATMENT.equals(action) ||
+                    (Intents.ACTION_NEW_TREATMENT.equals(action) ||
                             Intents.ACTION_CHANGED_TREATMENT.equals(action) ||
                             Intents.ACTION_REMOVED_TREATMENT.equals(action) ||
                             Intents.ACTION_NEW_STATUS.equals(action) ||
@@ -152,7 +161,7 @@ public class DataService extends IntentService {
         BgReading bgReading = new BgReading();
 
         bgReading.value = bundle.getDouble(Intents.EXTRA_BG_ESTIMATE);
-        bgReading.slope = bundle.getDouble(Intents.EXTRA_BG_SLOPE);
+        bgReading.direction = bundle.getString(Intents.EXTRA_BG_SLOPE_NAME);
         bgReading.battery_level = bundle.getInt(Intents.EXTRA_SENSOR_BATTERY);
         bgReading.timeIndex = bundle.getLong(Intents.EXTRA_TIMESTAMP);
         bgReading.raw = bundle.getDouble(Intents.EXTRA_RAW);
@@ -170,6 +179,58 @@ public class DataService extends IntentService {
             MainApp.getDbHelper().getDaoBgReadings().createIfNotExists(bgReading);
         } catch (SQLException e) {
             e.printStackTrace();
+        }
+        MainApp.bus().post(new EventNewBG());
+    }
+
+    private void handleNewDataFromMM640g(Intent intent) {
+        Bundle bundle = intent.getExtras();
+        if (bundle == null) return;
+
+        final String collection = bundle.getString("collection");
+        if (collection == null) return;
+
+        if (collection.equals("entries")) {
+            final String data = bundle.getString("data");
+
+            if ((data != null) && (data.length() > 0)) {
+                try {
+                    final JSONArray json_array = new JSONArray(data);
+                    for (int i = 0; i < json_array.length(); i++) {
+                        final JSONObject json_object = json_array.getJSONObject(i);
+                        final String type = json_object.getString("type");
+                        switch (type) {
+                            case "sgv":
+                                BgReading bgReading = new BgReading();
+
+                                bgReading.value = json_object.getDouble("sgv");
+                                bgReading.direction = json_object.getString("direction");
+                                bgReading.timeIndex = json_object.getLong("date");
+                                bgReading.raw = json_object.getDouble("sgv");
+
+                                if (bgReading.timeIndex < new Date().getTime() - Constants.hoursToKeepInDatabase * 60 * 60 * 1000L) {
+                                    if (Config.logIncommingBG)
+                                        log.debug("Ignoring old MM640g BG " + bgReading.toString());
+                                    return;
+                                }
+
+                                if (Config.logIncommingBG)
+                                    log.debug("MM640g BG " + bgReading.toString());
+
+                                try {
+                                    MainApp.getDbHelper().getDaoBgReadings().createIfNotExists(bgReading);
+                                } catch (SQLException e) {
+                                    e.printStackTrace();
+                                }
+                                break;
+                            default:
+                                log.debug("Unknown entries type: " + type);
+                        }
+                    }
+                } catch (JSONException e) {
+                    log.error("Got JSON exception: " + e);
+                }
+            }
         }
         MainApp.bus().post(new EventNewBG());
     }
@@ -248,21 +309,24 @@ public class DataService extends IntentService {
                 String activeProfile = bundles.getString("activeprofile");
                 String profile = bundles.getString("profile");
                 NSProfile nsProfile = new NSProfile(new JSONObject(profile), activeProfile);
-                if (MainApp.getConfigBuilder() == null) {
-                    log.error("Config builder not ready on receive profile");
-                    return;
-                }
+                MainApp.bus().post(new EventNewBasalProfile(nsProfile));
+
                 PumpInterface pump = MainApp.getConfigBuilder();
                 if (pump != null) {
                     SharedPreferences SP = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
-                    if (SP.getBoolean("syncprofiletopump", false))
-                        pump.setNewBasalProfile(nsProfile);
+                    if (SP.getBoolean("syncprofiletopump", false)) {
+                        if (pump.setNewBasalProfile(nsProfile) == PumpInterface.SUCCESS) {
+                            SmsCommunicatorPlugin smsCommunicatorPlugin = (SmsCommunicatorPlugin) MainApp.getSpecificPlugin(SmsCommunicatorPlugin.class);
+                            if (smsCommunicatorPlugin != null && smsCommunicatorPlugin.isEnabled(PluginBase.GENERAL)) {
+                                smsCommunicatorPlugin.sendNotificationToAllNumbers(MainApp.sResources.getString(R.string.profile_set_ok));
+                            }
+                        }
+                    }
                 } else {
                     log.error("No active pump selected");
                 }
                 if (Config.logIncommingData)
                     log.debug("Received profile: " + activeProfile + " " + profile);
-                MainApp.bus().post(new EventNewBasalProfile(nsProfile));
             } catch (JSONException e) {
                 e.printStackTrace();
             }
@@ -282,7 +346,6 @@ public class DataService extends IntentService {
                         handleAddedTreatment(trstr);
                     }
                 }
-                scheduleTreatmentChange();
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -304,7 +367,6 @@ public class DataService extends IntentService {
                         handleChangedTreatment(trstr);
                     }
                 }
-                scheduleTreatmentChange();
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -328,7 +390,6 @@ public class DataService extends IntentService {
                         removeTreatmentFromDb(_id);
                     }
                 }
-                scheduleTreatmentChange();
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -407,6 +468,7 @@ public class DataService extends IntentService {
                 int updated = MainApp.getDbHelper().getDaoTreatments().update(stored);
                 if (Config.logIncommingData)
                     log.debug("Records updated: " + updated);
+                scheduleTreatmentChange();
             }
         } else {
             if (Config.logIncommingData)
@@ -419,7 +481,8 @@ public class DataService extends IntentService {
             if (trJson.has("eventType")) {
                 treatment.mealBolus = true;
                 if (trJson.get("eventType").equals("Correction Bolus")) treatment.mealBolus = false;
-                if (trJson.get("eventType").equals("Bolus Wizard") && treatment.carbs <= 0) treatment.mealBolus = false;
+                if (trJson.get("eventType").equals("Bolus Wizard") && treatment.carbs <= 0)
+                    treatment.mealBolus = false;
             }
             treatment.setTimeIndex(treatment.getTimeIndex());
             try {
@@ -429,6 +492,7 @@ public class DataService extends IntentService {
             } catch (SQLException e) {
                 e.printStackTrace();
             }
+            scheduleTreatmentChange();
         }
     }
 
@@ -469,7 +533,8 @@ public class DataService extends IntentService {
         if (trJson.has("eventType")) {
             treatment.mealBolus = true;
             if (trJson.get("eventType").equals("Correction Bolus")) treatment.mealBolus = false;
-            if (trJson.get("eventType").equals("Bolus Wizard") && treatment.carbs <= 0) treatment.mealBolus = false;
+            if (trJson.get("eventType").equals("Bolus Wizard") && treatment.carbs <= 0)
+                treatment.mealBolus = false;
         }
         treatment.setTimeIndex(treatment.getTimeIndex());
         try {
@@ -481,6 +546,7 @@ public class DataService extends IntentService {
         } catch (SQLException e) {
             e.printStackTrace();
         }
+        scheduleTreatmentChange();
     }
 
     public void handleDanaRHistoryRecords(JSONObject trJson) throws JSONException, SQLException {

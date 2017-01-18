@@ -14,6 +14,9 @@ import android.preference.PreferenceManager;
 import android.support.v4.app.Fragment;
 import android.support.v4.app.FragmentManager;
 import android.support.v7.app.AlertDialog;
+import android.support.v7.widget.CardView;
+import android.support.v7.widget.LinearLayoutManager;
+import android.support.v7.widget.RecyclerView;
 import android.view.HapticFeedbackConstants;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -51,6 +54,7 @@ import info.nightscout.androidaps.db.BgReading;
 import info.nightscout.androidaps.db.DatabaseHelper;
 import info.nightscout.androidaps.db.TempBasal;
 import info.nightscout.androidaps.db.Treatment;
+import info.nightscout.androidaps.events.EventInitializationChanged;
 import info.nightscout.androidaps.events.EventNewBG;
 import info.nightscout.androidaps.events.EventNewBasalProfile;
 import info.nightscout.androidaps.events.EventPreferenceChange;
@@ -68,14 +72,16 @@ import info.nightscout.androidaps.plugins.Objectives.ObjectivesPlugin;
 import info.nightscout.androidaps.plugins.OpenAPSMA.IobTotal;
 import info.nightscout.androidaps.plugins.Overview.Dialogs.NewTreatmentDialog;
 import info.nightscout.androidaps.plugins.Overview.Dialogs.WizardDialog;
-import info.nightscout.androidaps.plugins.Overview.GraphSeriesExtension.PointsWithLabelGraphSeries;
+import info.nightscout.androidaps.plugins.Overview.graphExtensions.PointsWithLabelGraphSeries;
+import info.nightscout.androidaps.plugins.Overview.events.EventDismissNotification;
+import info.nightscout.androidaps.plugins.Overview.events.EventNewNotification;
+import info.nightscout.androidaps.plugins.Overview.graphExtensions.TimeAsXAxisLabelFormatter;
 import info.nightscout.client.data.NSProfile;
 import info.nightscout.utils.BolusWizard;
 import info.nightscout.utils.DateUtil;
 import info.nightscout.utils.DecimalFormatter;
 import info.nightscout.utils.Round;
 import info.nightscout.utils.SafeParse;
-import info.nightscout.utils.ToastUtils;
 
 
 public class OverviewFragment extends Fragment {
@@ -89,14 +95,20 @@ public class OverviewFragment extends Fragment {
     }
 
     TextView bgView;
+    TextView arrowView;
     TextView timeAgoView;
     TextView deltaView;
+    TextView avgdeltaView;
     TextView runningTempView;
     TextView baseBasalView;
+    LinearLayout basalLayout;
     TextView activeProfileView;
     TextView iobView;
     TextView apsModeView;
     GraphView bgGraph;
+
+    RecyclerView notificationsView;
+    LinearLayoutManager llm;
 
     LinearLayout cancelTempLayout;
     LinearLayout acceptTempLayout;
@@ -129,10 +141,13 @@ public class OverviewFragment extends Fragment {
 
         View view = inflater.inflate(R.layout.overview_fragment, container, false);
         bgView = (TextView) view.findViewById(R.id.overview_bg);
+        arrowView = (TextView) view.findViewById(R.id.overview_arrow);
         timeAgoView = (TextView) view.findViewById(R.id.overview_timeago);
         deltaView = (TextView) view.findViewById(R.id.overview_delta);
+        avgdeltaView = (TextView) view.findViewById(R.id.overview_avgdelta);
         runningTempView = (TextView) view.findViewById(R.id.overview_runningtemp);
         baseBasalView = (TextView) view.findViewById(R.id.overview_basebasal);
+        basalLayout = (LinearLayout) view.findViewById(R.id.overview_basallayout);
         activeProfileView = (TextView) view.findViewById(R.id.overview_activeprofile);
 
         iobView = (TextView) view.findViewById(R.id.overview_iob);
@@ -147,6 +162,11 @@ public class OverviewFragment extends Fragment {
         acceptTempLayout = (LinearLayout) view.findViewById(R.id.overview_accepttemplayout);
         quickWizardButton = (Button) view.findViewById(R.id.overview_quickwizard);
         quickWizardLayout = (LinearLayout) view.findViewById(R.id.overview_quickwizardlayout);
+
+        notificationsView = (RecyclerView) view.findViewById(R.id.overview_notifications);
+        notificationsView.setHasFixedSize(true);
+        llm = new LinearLayoutManager(view.getContext());
+        notificationsView.setLayoutManager(llm);
 
         treatmentButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -351,6 +371,11 @@ public class OverviewFragment extends Fragment {
     }
 
     @Subscribe
+    public void onStatusEvent(final EventInitializationChanged ev) {
+        updateGUIIfVisible();
+    }
+
+    @Subscribe
     public void onStatusEvent(final EventPreferenceChange ev) {
         updateGUIIfVisible();
     }
@@ -383,6 +408,12 @@ public class OverviewFragment extends Fragment {
     @Subscribe
     public void onStatusEvent(final EventNewBasalProfile ev) { updateGUIIfVisible(); }
 
+    @Subscribe
+    public void onStatusEvent(final EventNewNotification n) { updateNotifications(); }
+
+    @Subscribe
+    public void onStatusEvent(final EventDismissNotification n) { updateNotifications(); }
+
     private void hideTempRecommendation() {
         Activity activity = getActivity();
         if (activity != null)
@@ -407,6 +438,7 @@ public class OverviewFragment extends Fragment {
 
     @SuppressLint("SetTextI18n")
     public void updateGUI() {
+        updateNotifications();
         BgReading actualBG = MainApp.getDbHelper().actualBg();
         BgReading lastBG = MainApp.getDbHelper().lastBg();
         if (MainApp.getConfigBuilder() == null || MainApp.getConfigBuilder().getActiveProfile() == null) // app not initialized yet
@@ -421,7 +453,7 @@ public class OverviewFragment extends Fragment {
 
         // open loop mode
         final LoopPlugin.LastRun finalLastRun = LoopPlugin.lastRun;
-        if (Config.APS) {
+        if (Config.APS && MainApp.getConfigBuilder().getPumpDescription().isTempBasalCapable) {
             apsModeView.setVisibility(View.VISIBLE);
             apsModeView.setBackgroundResource(R.drawable.loopmodeborder);
             apsModeView.setTextColor(Color.BLACK);
@@ -465,21 +497,21 @@ public class OverviewFragment extends Fragment {
             apsModeView.setVisibility(View.GONE);
         }
 
+        // **** Temp button ****
+        NSProfile profile = MainApp.getConfigBuilder().getActiveProfile().getProfile();
+        PumpInterface pump = MainApp.getConfigBuilder();
+
         boolean showAcceptButton = !MainApp.getConfigBuilder().isClosedModeEnabled(); // Open mode needed
         showAcceptButton = showAcceptButton && finalLastRun != null && finalLastRun.lastAPSRun != null; // aps result must exist
         showAcceptButton = showAcceptButton && (finalLastRun.lastOpenModeAccept == null || finalLastRun.lastOpenModeAccept.getTime() < finalLastRun.lastAPSRun.getTime()); // never accepted or before last result
         showAcceptButton = showAcceptButton && finalLastRun.constraintsProcessed.changeRequested; // change is requested
 
-        if (showAcceptButton) {
+        if (showAcceptButton && pump.isInitialized()) {
             acceptTempLayout.setVisibility(View.VISIBLE);
             acceptTempButton.setText(getContext().getString(R.string.setbasalquestion) + "\n" + finalLastRun.constraintsProcessed);
         } else {
             acceptTempLayout.setVisibility(View.GONE);
         }
-
-        // **** Temp button ****
-        NSProfile profile = MainApp.getConfigBuilder().getActiveProfile().getProfile();
-        PumpInterface pump = MainApp.getConfigBuilder();
 
         if (pump.isTempBasalInProgress()) {
             TempBasal activeTemp = pump.getTempBasal();
@@ -491,7 +523,13 @@ public class OverviewFragment extends Fragment {
             cancelTempLayout.setVisibility(View.GONE);
             runningTempView.setVisibility(View.GONE);
         }
-        baseBasalView.setText(DecimalFormatter.to2Decimal(pump.getBaseBasalRate()) + " U/h");
+
+        if (pump.getPumpDescription().isTempBasalCapable) {
+            basalLayout.setVisibility(View.VISIBLE);
+            baseBasalView.setText(DecimalFormatter.to2Decimal(pump.getBaseBasalRate()) + " U/h");
+        } else {
+            basalLayout.setVisibility(View.GONE);
+        }
 
         if (profile != null && profile.getActiveProfile() != null)
             activeProfileView.setText(profile.getActiveProfile());
@@ -510,7 +548,7 @@ public class OverviewFragment extends Fragment {
         });
         activeProfileView.setLongClickable(true);
 
-        if (profile == null) {
+        if (profile == null || !pump.isInitialized()) {
             // disable all treatment buttons because we are not able to check constraints without profile
             wizardButton.setVisibility(View.INVISIBLE);
             treatmentButton.setVisibility(View.INVISIBLE);
@@ -524,7 +562,7 @@ public class OverviewFragment extends Fragment {
 
         // QuickWizard button
         QuickWizard.QuickWizardEntry quickWizardEntry = getPlugin().quickWizard.getActive();
-        if (quickWizardEntry != null && lastBG != null) {
+        if (quickWizardEntry != null && lastBG != null && pump.isInitialized()) {
             quickWizardLayout.setVisibility(View.VISIBLE);
             String text = MainApp.sResources.getString(R.string.bolus) + ": " + quickWizardEntry.buttonText() + " " + DecimalFormatter.to0Decimal(quickWizardEntry.carbs()) + "g";
             BolusWizard wizard = new BolusWizard();
@@ -539,9 +577,13 @@ public class OverviewFragment extends Fragment {
         // **** BG value ****
         if (lastBG != null && bgView != null) {
             bgView.setText(lastBG.valueToUnitsToString(profile.getUnits()));
+            arrowView.setText(lastBG.directionToSymbol());
             DatabaseHelper.GlucoseStatus glucoseStatus = MainApp.getDbHelper().getGlucoseStatusData();
-            if (glucoseStatus != null)
+            if (glucoseStatus != null){
                 deltaView.setText("Δ " + NSProfile.toUnitsString(glucoseStatus.delta, glucoseStatus.delta * Constants.MGDL_TO_MMOLL, units) + " " + units);
+                avgdeltaView.setText("øΔ " + NSProfile.toUnitsString(glucoseStatus.avgdelta, glucoseStatus.avgdelta * Constants.MGDL_TO_MMOLL, units) + " " + units);
+            }
+
             BgReading.units = profile.getUnits();
         } else
             return;
@@ -555,7 +597,7 @@ public class OverviewFragment extends Fragment {
 
         Long agoMsec = new Date().getTime() - lastBG.timeIndex;
         int agoMin = (int) (agoMsec / 60d / 1000d);
-        timeAgoView.setText(agoMin + " " + getString(R.string.minago));
+        timeAgoView.setText(String.format(MainApp.sResources.getString(R.string.minago), agoMin));
 
         // iob
         MainApp.getConfigBuilder().getActiveTreatments().updateTotalIOB();
@@ -634,27 +676,36 @@ public class OverviewFragment extends Fragment {
         Double maxBasalValueFound = 0d;
 
         long now = new Date().getTime();
-        List<BarDataPoint> basalArray = new ArrayList<BarDataPoint>();
-        for (long time = fromTime; time < now; time += 5 * 60 * 1000L) {
-            TempBasal tb = MainApp.getConfigBuilder().getTempBasal(new Date(time));
-            Double basal = 0d;
-            if (tb != null)
-                basalArray.add(new BarDataPoint(time, basal = tb.tempBasalConvertedToAbsolute(new Date(time)), true));
-            else
-                basalArray.add(new BarDataPoint(time, basal = profile.getBasal(NSProfile.secondsFromMidnight(new Date(time))), false));
-            maxBasalValueFound = Math.max(maxBasalValueFound, basal);
-        }
-        BarDataPoint[] basal = new BarDataPoint[basalArray.size()];
-        basal = basalArray.toArray(basal);
-        bgGraph.addSeries(basalsSeries = new BarGraphSeries<DataPoint>(basal));
-        basalsSeries.setValueDependentColor(new ValueDependentColor<DataPoint>() {
-            @Override
-            public int get(DataPoint data) {
-                BarDataPoint point = (BarDataPoint) data;
-                if (point.isTempBasal) return Color.BLUE;
-                else return Color.CYAN;
+        if (pump.getPumpDescription().isTempBasalCapable) {
+            List<BarDataPoint> basalArray = new ArrayList<BarDataPoint>();
+            for (long time = fromTime; time < now; time += 5 * 60 * 1000L) {
+                TempBasal tb = MainApp.getConfigBuilder().getTempBasal(new Date(time));
+                Double basal = 0d;
+                if (tb != null)
+                    basalArray.add(new BarDataPoint(time, basal = tb.tempBasalConvertedToAbsolute(new Date(time)), true));
+                else
+                    basalArray.add(new BarDataPoint(time, basal = profile.getBasal(NSProfile.secondsFromMidnight(new Date(time))), false));
+                maxBasalValueFound = Math.max(maxBasalValueFound, basal);
             }
-        });
+            BarDataPoint[] basal = new BarDataPoint[basalArray.size()];
+            basal = basalArray.toArray(basal);
+            bgGraph.addSeries(basalsSeries = new BarGraphSeries<DataPoint>(basal));
+            basalsSeries.setValueDependentColor(new ValueDependentColor<DataPoint>() {
+                @Override
+                public int get(DataPoint data) {
+                    BarDataPoint point = (BarDataPoint) data;
+                    if (point.isTempBasal) return Color.BLUE;
+                    else return Color.CYAN;
+                }
+            });
+        }
+
+        // set manual x bounds to have nice steps
+        bgGraph.getViewport().setMaxX(toTime);
+        bgGraph.getViewport().setMinX(fromTime);
+        bgGraph.getViewport().setXAxisBoundsManual(true);
+        bgGraph.getGridLabelRenderer().setLabelFormatter(new TimeAsXAxisLabelFormatter(getActivity(), "HH"));
+        bgGraph.getGridLabelRenderer().setNumHorizontalLabels(7); // only 7 because of the space
 
         // **** BG graph ****
         List<BgReading> bgReadingsArray = MainApp.getDbHelper().getDataFromTime(fromTime);
@@ -736,13 +787,6 @@ public class OverviewFragment extends Fragment {
             seriesTreatments.setColor(Color.CYAN);
         }
 
-        // set manual x bounds to have nice steps
-        bgGraph.getViewport().setMaxX(toTime);
-        bgGraph.getViewport().setMinX(fromTime);
-        bgGraph.getViewport().setXAxisBoundsManual(true);
-        bgGraph.getGridLabelRenderer().setLabelFormatter(new TimeAsXAxisLabelFormatter(getActivity(), "HH"));
-        bgGraph.getGridLabelRenderer().setNumHorizontalLabels(7); // only 7 because of the space
-
         // set manual y bounds to have nice steps
         bgGraph.getViewport().setMaxY(maxBgValue);
         bgGraph.getViewport().setMinY(0);
@@ -750,12 +794,104 @@ public class OverviewFragment extends Fragment {
         bgGraph.getGridLabelRenderer().setNumVerticalLabels(numOfHorizLines);
 
         // set second scale
-        bgGraph.getSecondScale().addSeries(basalsSeries);
-        bgGraph.getSecondScale().setMinY(0);
-        bgGraph.getSecondScale().setMaxY(maxBgValue / lowLine * maxBasalValueFound * 1.2d);
-        bgGraph.getGridLabelRenderer().setVerticalLabelsSecondScaleColor(MainApp.instance().getResources().getColor(R.color.background_material_dark)); // same color as backround = hide
+        if (pump.getPumpDescription().isTempBasalCapable) {
+            bgGraph.getSecondScale().addSeries(basalsSeries);
+            bgGraph.getSecondScale().setMinY(0);
+            bgGraph.getSecondScale().setMaxY(maxBgValue / lowLine * maxBasalValueFound * 1.2d);
+            bgGraph.getGridLabelRenderer().setVerticalLabelsSecondScaleColor(MainApp.instance().getResources().getColor(R.color.background_material_dark)); // same color as backround = hide
+        }
 
 
     }
+
+    //Notifications
+    public static class RecyclerViewAdapter extends RecyclerView.Adapter<RecyclerViewAdapter.NotificationsViewHolder> {
+
+        List<Notification> notificationsList;
+
+        RecyclerViewAdapter(List<Notification> notificationsList) {
+            this.notificationsList = notificationsList;
+        }
+
+        @Override
+        public NotificationsViewHolder onCreateViewHolder(ViewGroup viewGroup, int viewType) {
+            View v = LayoutInflater.from(viewGroup.getContext()).inflate(R.layout.overview_notification_item, viewGroup, false);
+            NotificationsViewHolder notificationsViewHolder = new NotificationsViewHolder(v);
+            return notificationsViewHolder;
+        }
+
+        @Override
+        public void onBindViewHolder(NotificationsViewHolder holder, int position) {
+            Notification notification = notificationsList.get(position);
+            holder.dismiss.setTag(notification);
+            holder.text.setText(notification.text);
+            holder.time.setText(DateUtil.timeString(notification.date));
+            if (notification.level == Notification.URGENT)
+                holder.cv.setBackgroundColor(MainApp.instance().getResources().getColor(R.color.notificationUrgent));
+            else if (notification.level == Notification.NORMAL)
+                holder.cv.setBackgroundColor(MainApp.instance().getResources().getColor(R.color.notificationNormal));
+            else if (notification.level == Notification.LOW)
+                holder.cv.setBackgroundColor(MainApp.instance().getResources().getColor(R.color.notificationLow));
+            else if (notification.level == Notification.INFO)
+                holder.cv.setBackgroundColor(MainApp.instance().getResources().getColor(R.color.notificationInfo));
+        }
+
+        @Override
+        public int getItemCount() {
+            return notificationsList.size();
+        }
+
+        @Override
+        public void onAttachedToRecyclerView(RecyclerView recyclerView) {
+            super.onAttachedToRecyclerView(recyclerView);
+        }
+
+        public static class NotificationsViewHolder extends RecyclerView.ViewHolder implements View.OnClickListener {
+            CardView cv;
+            TextView time;
+            TextView text;
+            Button dismiss;
+
+            NotificationsViewHolder(View itemView) {
+                super(itemView);
+                cv = (CardView) itemView.findViewById(R.id.notification_cardview);
+                time = (TextView) itemView.findViewById(R.id.notification_time);
+                text = (TextView) itemView.findViewById(R.id.notification_text);
+                dismiss = (Button) itemView.findViewById(R.id.notification_dismiss);
+                dismiss.setOnClickListener(this);
+            }
+
+            @Override
+            public void onClick(View v) {
+                Notification notification = (Notification) v.getTag();
+                switch (v.getId()) {
+                    case R.id.notification_dismiss:
+                        MainApp.bus().post(new EventDismissNotification(notification.id));
+                        break;
+                }
+            }
+        }
+    }
+
+    void updateNotifications() {
+        Activity activity = getActivity();
+        if (activity != null)
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    NotificationStore nstore = getPlugin().notificationStore;
+                    nstore.removeExpired();
+                    if (nstore.store.size() > 0) {
+                        RecyclerViewAdapter adapter = new RecyclerViewAdapter(nstore.store);
+                        notificationsView.setAdapter(adapter);
+                        notificationsView.setVisibility(View.VISIBLE);
+                    } else {
+                        notificationsView.setVisibility(View.GONE);
+                    }
+                }
+            });
+    }
+
+
 
 }

@@ -1,6 +1,7 @@
 package info.nightscout.androidaps;
 
 import android.app.Application;
+import android.content.Intent;
 import android.content.res.Resources;
 import android.support.annotation.Nullable;
 
@@ -22,26 +23,32 @@ import info.nightscout.androidaps.plugins.CircadianPercentageProfile.CircadianPe
 import info.nightscout.androidaps.plugins.ConfigBuilder.ConfigBuilderFragment;
 import info.nightscout.androidaps.plugins.ConfigBuilder.ConfigBuilderPlugin;
 import info.nightscout.androidaps.plugins.DanaR.DanaRFragment;
+import info.nightscout.androidaps.plugins.DanaRKorean.DanaRKoreanFragment;
+import info.nightscout.androidaps.plugins.LocalProfile.LocalProfileFragment;
 import info.nightscout.androidaps.plugins.Loop.LoopFragment;
-import info.nightscout.androidaps.plugins.MM640g.MM640gFragment;
-import info.nightscout.androidaps.plugins.NSProfileViewer.NSProfileViewerFragment;
+import info.nightscout.androidaps.plugins.MDI.MDIFragment;
+import info.nightscout.androidaps.plugins.NSProfile.NSProfileFragment;
 import info.nightscout.androidaps.plugins.Objectives.ObjectivesFragment;
 import info.nightscout.androidaps.plugins.OpenAPSMA.OpenAPSMAFragment;
 import info.nightscout.androidaps.plugins.Overview.OverviewFragment;
 import info.nightscout.androidaps.plugins.SafetyFragment.SafetyFragment;
 import info.nightscout.androidaps.plugins.SimpleProfile.SimpleProfileFragment;
 import info.nightscout.androidaps.plugins.SmsCommunicator.SmsCommunicatorFragment;
+import info.nightscout.androidaps.plugins.SourceMM640g.SourceMM640gFragment;
 import info.nightscout.androidaps.plugins.SourceNSClient.SourceNSClientFragment;
 import info.nightscout.androidaps.plugins.SourceXdrip.SourceXdripFragment;
 import info.nightscout.androidaps.plugins.TempBasals.TempBasalsFragment;
 import info.nightscout.androidaps.plugins.Treatments.TreatmentsFragment;
 import info.nightscout.androidaps.plugins.VirtualPump.VirtualPumpFragment;
 import info.nightscout.androidaps.plugins.Wear.WearFragment;
+import info.nightscout.androidaps.plugins.persistentnotification.PersistentNotificationPlugin;
+import info.nightscout.androidaps.receivers.KeepAliveReceiver;
 import io.fabric.sdk.android.Fabric;
 
 
 public class MainApp extends Application {
     private static Logger log = LoggerFactory.getLogger(MainApp.class);
+    private static KeepAliveReceiver keepAliveReceiver;
 
     private static Bus sBus;
     private static MainApp sInstance;
@@ -70,13 +77,15 @@ public class MainApp extends Application {
             pluginsList.add(OverviewFragment.getPlugin());
             pluginsList.add(ActionsFragment.getPlugin());
             if (Config.DANAR) pluginsList.add(DanaRFragment.getPlugin());
-            if (Config.MM640G) pluginsList.add(MM640gFragment.getPlugin());
+            if (Config.DANARKOREAN) pluginsList.add(DanaRKoreanFragment.getPlugin());
             if (Config.CAREPORTALENABLED) pluginsList.add(CareportalFragment.getPlugin());
+            pluginsList.add(MDIFragment.getPlugin());
             pluginsList.add(VirtualPumpFragment.getPlugin());
             if (Config.LOOPENABLED) pluginsList.add(LoopFragment.getPlugin());
             if (Config.OPENAPSMAENABLED) pluginsList.add(OpenAPSMAFragment.getPlugin());
-            pluginsList.add(NSProfileViewerFragment.getPlugin());
+            pluginsList.add(NSProfileFragment.getPlugin());
             pluginsList.add(SimpleProfileFragment.getPlugin());
+            pluginsList.add(LocalProfileFragment.getPlugin());
             pluginsList.add(CircadianPercentageProfileFragment.getPlugin());
             pluginsList.add(TreatmentsFragment.getPlugin());
             pluginsList.add(TempBasalsFragment.getPlugin());
@@ -84,16 +93,38 @@ public class MainApp extends Application {
             if (Config.APS) pluginsList.add(ObjectivesFragment.getPlugin());
             pluginsList.add(SourceXdripFragment.getPlugin());
             pluginsList.add(SourceNSClientFragment.getPlugin());
+            pluginsList.add(SourceMM640gFragment.getPlugin());
             if (Config.SMSCOMMUNICATORENABLED)
                 pluginsList.add(SmsCommunicatorFragment.getPlugin());
 
             if (Config.WEAR) pluginsList.add(WearFragment.getPlugin(this));
+            pluginsList.add(new PersistentNotificationPlugin(this));
 
             pluginsList.add(sConfigBuilder = ConfigBuilderFragment.getPlugin());
 
             MainApp.getConfigBuilder().initialize();
         }
         MainApp.getConfigBuilder().uploadAppStart();
+
+        startKeepAliveService();
+    }
+
+    private void startKeepAliveService() {
+        if (keepAliveReceiver == null) {
+            keepAliveReceiver = new KeepAliveReceiver();
+            if (Config.DANAR) {
+                startService(new Intent(this, info.nightscout.androidaps.plugins.DanaR.Services.ExecutionService.class));
+                startService(new Intent(this, info.nightscout.androidaps.plugins.DanaRKorean.Services.ExecutionService.class));
+            }
+            keepAliveReceiver.setAlarm(this);
+        }
+    }
+
+
+
+    public void stopKeepAliveService(){
+        if(keepAliveReceiver!=null)
+        keepAliveReceiver.cancelAlarm(this);
     }
 
     public static Bus bus() {

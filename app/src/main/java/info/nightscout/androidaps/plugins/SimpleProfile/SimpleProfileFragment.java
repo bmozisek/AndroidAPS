@@ -1,6 +1,7 @@
 package info.nightscout.androidaps.plugins.SimpleProfile;
 
 
+import android.app.Activity;
 import android.os.Bundle;
 import android.support.v4.app.Fragment;
 import android.text.Editable;
@@ -8,15 +9,30 @@ import android.text.TextWatcher;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.RadioButton;
 
+import com.squareup.otto.Subscribe;
+
+import org.json.JSONArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.text.DecimalFormat;
+
+import info.nightscout.androidaps.MainApp;
 import info.nightscout.androidaps.R;
+import info.nightscout.androidaps.events.EventInitializationChanged;
 import info.nightscout.androidaps.interfaces.FragmentBase;
+import info.nightscout.androidaps.interfaces.PumpInterface;
+import info.nightscout.androidaps.plugins.Careportal.Dialogs.NewNSTreatmentDialog;
+import info.nightscout.androidaps.plugins.Careportal.OptionsToShow;
+import info.nightscout.androidaps.plugins.Overview.events.EventNewNotification;
+import info.nightscout.utils.DecimalFormatter;
 import info.nightscout.utils.SafeParse;
+import info.nightscout.utils.TimeListEdit;
 
 public class SimpleProfileFragment extends Fragment implements FragmentBase {
     private static Logger log = LoggerFactory.getLogger(SimpleProfileFragment.class);
@@ -36,6 +52,7 @@ public class SimpleProfileFragment extends Fragment implements FragmentBase {
     EditText basalView;
     EditText targetlowView;
     EditText targethighView;
+    Button profileswitchButton;
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
@@ -50,6 +67,15 @@ public class SimpleProfileFragment extends Fragment implements FragmentBase {
         basalView = (EditText) layout.findViewById(R.id.simpleprofile_basalrate);
         targetlowView = (EditText) layout.findViewById(R.id.simpleprofile_targetlow);
         targethighView = (EditText) layout.findViewById(R.id.simpleprofile_targethigh);
+        profileswitchButton = (Button) layout.findViewById(R.id.simpleprofile_profileswitch);
+
+        PumpInterface pump = MainApp.getConfigBuilder();
+        if (!pump.getPumpDescription().isTempBasalCapable) {
+            layout.findViewById(R.id.simpleprofile_basalrate).setVisibility(View.GONE);
+            layout.findViewById(R.id.simpleprofile_basalrate_label).setVisibility(View.GONE);
+        }
+
+        onStatusEvent(null);
 
         mgdlView.setChecked(simpleProfilePlugin.mgdl);
         mmolView.setChecked(simpleProfilePlugin.mmol);
@@ -77,6 +103,17 @@ public class SimpleProfileFragment extends Fragment implements FragmentBase {
                 simpleProfilePlugin.mgdl = !simpleProfilePlugin.mmol;
                 mgdlView.setChecked(simpleProfilePlugin.mgdl);
                 simpleProfilePlugin.storeSettings();
+            }
+        });
+
+        profileswitchButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                NewNSTreatmentDialog newDialog = new NewNSTreatmentDialog();
+                final OptionsToShow profileswitch = new OptionsToShow(R.id.careportal_profileswitch, R.string.careportal_profileswitch, true, false, false, false, false, false, false, true, false);
+                profileswitch.executeProfileSwitch = true;
+                newDialog.setOptions(profileswitch);
+                newDialog.show(getFragmentManager(), "NewNSTreatmentDialog");
             }
         });
 
@@ -112,7 +149,39 @@ public class SimpleProfileFragment extends Fragment implements FragmentBase {
         basalView.addTextChangedListener(textWatch);
         targetlowView.addTextChangedListener(textWatch);
         targethighView.addTextChangedListener(textWatch);
+
+        onStatusEvent(null);
+
         return layout;
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        MainApp.bus().unregister(this);
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        MainApp.bus().register(this);
+        onStatusEvent(null);
+    }
+
+    @Subscribe
+    public void onStatusEvent(final EventInitializationChanged e) {
+        Activity activity = getActivity();
+        if (activity != null)
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (!MainApp.getConfigBuilder().isInitialized() || !MainApp.getConfigBuilder().getPumpDescription().isSetBasalProfileCapable) {
+                        profileswitchButton.setVisibility(View.GONE);
+                    } else {
+                        profileswitchButton.setVisibility(View.VISIBLE);
+                    }
+                }
+            });
     }
 
 }
